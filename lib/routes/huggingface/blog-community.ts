@@ -54,7 +54,7 @@ interface AuthorData {
 
 interface Post {
     _id: string;
-    authorData: AuthorData;
+    authorsData: AuthorData[];
     canonical: boolean;
     isUpvotedByUser: boolean;
     numCoauthors: number;
@@ -64,6 +64,7 @@ interface Post {
     title: string;
     upvotes: number;
     thumbnail?: string;
+    url: string;
 }
 
 interface CommunityBlogApiResponse {
@@ -77,17 +78,15 @@ interface CommunityBlogApiResponse {
 
 async function handler(ctx) {
     const { sort = 'trending' } = ctx.req.param();
-    const response = await ofetch<CommunityBlogApiResponse>(`https://huggingface.co/api/blog/community?sort=${sort}`);
-
-    const { posts } = response;
+    const { posts } = await ofetch<CommunityBlogApiResponse>(`https://huggingface.co/api/blog/community?sort=${sort}`);
 
     const lists = posts.map((item) => ({
         title: item.title,
-        link: `https://huggingface.co/blog/${item.authorData.name}/${item.slug}`,
+        link: `https://huggingface.co${item.url}`,
         pubDate: parseDate(item.publishedAt),
-        author: item.authorData.fullname || item.authorData.name,
+        author: item.authorsData?.[0]?.fullname || item.authorsData?.[0]?.name || 'Unknown',
         upvotes: item.upvotes,
-        image: item.thumbnail ? new URL(item.thumbnail, 'https://huggingface.co').toString() : undefined,
+        image: item.thumbnail ? new URL(item.thumbnail, 'https://huggingface.co').href : undefined,
     }));
 
     const items: DataItem[] = await Promise.all(
@@ -98,7 +97,7 @@ async function handler(ctx) {
                 $('.mb-4, .mb-6, .not-prose, h1').remove();
                 return {
                     ...item,
-                    description: $('.blog-content').html() ?? undefined,
+                    description: $('.blog-content').html(),
                 };
             })
         )
