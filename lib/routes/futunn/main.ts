@@ -1,12 +1,13 @@
-import path from 'node:path';
-
 import { load } from 'cheerio';
 
 import type { Route } from '@/types';
 import cache from '@/utils/cache';
 import got from '@/utils/got';
-import { parseDate } from '@/utils/parse-date';
-import { art } from '@/utils/render';
+import { getRouteLimit } from '@/utils/route-limit';
+import { parseDate } from '@/utils/time';
+import { isOnSite } from '@/utils/valid-host';
+
+import { renderDescription } from './templates/description';
 
 export const route: Route = {
     path: ['/main', '/'],
@@ -27,7 +28,7 @@ export const route: Route = {
 };
 
 async function handler(ctx) {
-    const limit = ctx.req.query('limit') ? Number.parseInt(ctx.req.query('limit')) : 48;
+    const limit = getRouteLimit(ctx, 48);
 
     const rootUrl = 'https://news.futunn.com';
     const currentUrl = `${rootUrl}/main`;
@@ -40,10 +41,10 @@ async function handler(ctx) {
 
     let items = response.data.data.list.map((item) => ({
         title: item.title,
-        link: item.url.split('?')[0],
+        link: item.url.split('?', 1)[0],
         author: item.source,
         pubDate: parseDate(item.timestamp * 1000),
-        description: art(path.join(__dirname, 'templates/description.art'), {
+        description: renderDescription({
             abs: item.abstract,
             pic: item.pic,
         }),
@@ -52,7 +53,8 @@ async function handler(ctx) {
     items = await Promise.all(
         items.map((item) =>
             cache.tryGet(item.link, async () => {
-                if (/news\.futunn\.com/.test(item.link)) {
+                // only follow links on the site itself
+                if (isOnSite(item.link, 'news.futunn.com')) {
                     const detailResponse = await got({
                         method: 'get',
                         url: item.link,
@@ -61,8 +63,8 @@ async function handler(ctx) {
                     const content = load(detailResponse.data);
 
                     content('.futu-news-time-stamp').remove();
-                    content('.nnstock').each(function () {
-                        content(this).replaceWith(`<a href="${content(this).attr('href')}">${content(this).text().replaceAll('$', '')}</a>`);
+                    content('.nnstock').each((_, el) => {
+                        content(el).replaceWith(`<a href="${content(el).attr('href')}">${content(el).text().replaceAll('$', '')}</a>`);
                     });
 
                     item.description = content('.origin_content').html();

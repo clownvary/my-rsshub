@@ -1,12 +1,13 @@
-import path from 'node:path';
-
 import { load } from 'cheerio';
 
 import type { Route } from '@/types';
 import cache from '@/utils/cache';
 import got from '@/utils/got';
-import { parseDate } from '@/utils/parse-date';
-import { art } from '@/utils/render';
+import { getRouteLimit } from '@/utils/route-limit';
+import { parseDate } from '@/utils/time';
+import { isOnSite } from '@/utils/valid-host';
+
+import { renderDescription } from './templates/description';
 
 export const route: Route = {
     path: '/topic/:id',
@@ -27,37 +28,24 @@ export const route: Route = {
     handler,
 };
 
-async function getTopic(rootUrl, id, seqMarkInput = '') {
-    const topicListResponse = await got({
-        method: 'get',
-        url: `${rootUrl}/news-site-api/main/get-topics-list?pageSize=48&seqMark=${seqMarkInput}`,
-    });
-    const { hasMore, seqMark, list } = topicListResponse.data.data.data;
-    const topic = list.find((item) => item.idx === id);
-    if (topic) {
-        return {
-            topicTitle: topic.title,
-            topicDescription: topic.detail,
-        };
-    } else if (hasMore === 1) {
-        return getTopic(rootUrl, id, seqMark);
-    } else {
-        return {
-            topicTitle: '',
-            topicDescription: '',
-        };
-    }
+async function getTopic(link: string) {
+    const response = await got(link);
+    const $ = load(response.data);
+    return {
+        topicTitle: $('meta[property="og:title"]').attr('content') ?? $('title').text(),
+        topicDescription: $('meta[property="og:description"]').attr('content') ?? $('meta[name="description"]').attr('content'),
+    };
 }
 
 async function handler(ctx) {
-    const limit = ctx.req.query('limit') ? Number.parseInt(ctx.req.query('limit')) : 48;
+    const limit = getRouteLimit(ctx, 48);
     const id = ctx.req.param('id');
 
     const rootUrl = 'https://news.futunn.com';
     const link = `${rootUrl}/news-topics/${id}/`;
     const apiUrl = `${rootUrl}/news-site-api/topic/get-topics-news-list?topicsId=${id}&pageSize=${limit}`;
 
-    const { topicTitle, topicDescription } = await cache.tryGet(link, async () => await getTopic(rootUrl, id));
+    const { topicTitle, topicDescription } = await cache.tryGet(link, () => getTopic(link));
 
     const response = await got({
         method: 'get',
@@ -69,7 +57,7 @@ async function handler(ctx) {
         link: item.url,
         author: item.source,
         pubDate: parseDate(item.time * 1000),
-        description: art(path.join(__dirname, 'templates/description.art'), {
+        description: renderDescription({
             abs: item.abstract,
             pic: item.pic,
         }),
@@ -78,7 +66,8 @@ async function handler(ctx) {
     items = await Promise.all(
         items.map((item) =>
             cache.tryGet(item.link, async () => {
-                if (/news\.futunn\.com/.test(item.link)) {
+                // only follow links on the site itself
+                if (isOnSite(item.link, 'news.futunn.com')) {
                     const detailResponse = await got({
                         method: 'get',
                         url: item.link,
@@ -87,8 +76,8 @@ async function handler(ctx) {
                     const content = load(detailResponse.data);
 
                     content('.futu-news-time-stamp').remove();
-                    content('.nnstock').each(function () {
-                        content(this).replaceWith(`<a href="${content(this).attr('href')}">${content(this).text().replaceAll('$', '')}</a>`);
+                    content('.nnstock').each((_, el) => {
+                        content(el).replaceWith(`<a href="${content(el).attr('href')}">${content(el).text().replaceAll('$', '')}</a>`);
                     });
 
                     item.description = content('.origin_content').html();
